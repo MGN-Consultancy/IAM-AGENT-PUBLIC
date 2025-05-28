@@ -130,6 +130,15 @@ if ($uninstall) {
                     Log "No DNS record found for $dnsName."
                 }
                 Log "Cloudflare tunnel and DNS config removed."
+                # --- FINAL: Remove tunnel object from Cloudflare API ---
+                if ($tunnelId) {
+                    try {
+                        Invoke-RestMethod -Method DELETE -Uri "$cloudflare_api_url/accounts/$accountId/cfd_tunnel/$tunnelId" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
+                        Log "Tunnel object deleted from Cloudflare API."
+                    } catch {
+                        Log "Failed to delete tunnel object from Cloudflare API: $_"
+                    }
+                }
             } else {
                 Log "No tunnel found to remove."
             }
