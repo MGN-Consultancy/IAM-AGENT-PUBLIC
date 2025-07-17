@@ -294,7 +294,33 @@ if ($tunnelMatch) {
         exit 0
     }
     Write-Host "Tunnel '$tunnelName' exists."
-    $regen = Read-Host "Fetch token for existing tunnel? (Y/N)"
+    
+    # Try to prompt for user input, with fallback for non-interactive sessions
+    $regen = $null
+    $maxRetries = 3
+    $retryCount = 0
+    
+    while ($regen -eq $null -and $retryCount -lt $maxRetries) {
+        try {
+            $regen = Read-Host "Fetch token for existing tunnel? (Y/N)"
+            if ($regen -match '^[YyNn]$') {
+                break
+            } else {
+                Write-Host "Please enter Y or N"
+                $regen = $null
+                $retryCount++
+            }
+        } catch {
+            $retryCount++
+            if ($retryCount -ge $maxRetries) {
+                Log "Unable to get user input after $maxRetries attempts. Defaulting to use existing tunnel token."
+                $regen = "N"
+            } else {
+                Start-Sleep -Seconds 1
+            }
+        }
+    }
+    
     if ($regen -eq 'Y' -or $regen -eq 'y') {
         $tokenRes = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/accounts/$accountId/cfd_tunnel/$tunnelId/token" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
         $tunnelToken = $tokenRes.result
@@ -305,16 +331,63 @@ if ($tunnelMatch) {
         if (Test-Path $tunnelTokenPath) {
             $tunnelToken = Get-Content -Path $tunnelTokenPath -ErrorAction SilentlyContinue
         } elseif (-not $silent) {
-            $tunnelToken = Read-Host "Tunnel token file not found. Please paste the existing Cloudflare tunnel token"
-            Set-Content -Path $tunnelTokenPath -Value $tunnelToken
-            Log "Manual token entered and saved to file."
+            $tunnelToken = $null
+            $maxRetries = 3
+            $retryCount = 0
+            
+            while ($tunnelToken -eq $null -and $retryCount -lt $maxRetries) {
+                try {
+                    $tunnelToken = Read-Host "Tunnel token file not found. Please paste the existing Cloudflare tunnel token"
+                    if ([string]::IsNullOrWhiteSpace($tunnelToken)) {
+                        Write-Host "Token cannot be empty. Please try again."
+                        $tunnelToken = $null
+                        $retryCount++
+                    } else {
+                        Set-Content -Path $tunnelTokenPath -Value $tunnelToken
+                        Log "Manual token entered and saved to file."
+                        break
+                    }
+                } catch {
+                    $retryCount++
+                    if ($retryCount -ge $maxRetries) {
+                        Log "Unable to get tunnel token after $maxRetries attempts."
+                        throw "Tunnel token not found and cannot prompt for input."
+                    } else {
+                        Start-Sleep -Seconds 1
+                    }
+                }
+            }
         } else {
             throw "Tunnel token not found and silent mode is enabled. Cannot proceed."
         }
     }
 
     if ($tunnelMatch.status -eq "healthy") {
-        $reinstall = Read-Host "Tunnel is currently healthy. Reinstall Cloudflared anyway? (Y/N)"
+        $reinstall = $null
+        $maxRetries = 3
+        $retryCount = 0
+        
+        while ($reinstall -eq $null -and $retryCount -lt $maxRetries) {
+            try {
+                $reinstall = Read-Host "Tunnel is currently healthy. Reinstall Cloudflared anyway? (Y/N)"
+                if ($reinstall -match '^[YyNn]$') {
+                    break
+                } else {
+                    Write-Host "Please enter Y or N"
+                    $reinstall = $null
+                    $retryCount++
+                }
+            } catch {
+                $retryCount++
+                if ($retryCount -ge $maxRetries) {
+                    Log "Unable to get user input after $maxRetries attempts. Skipping Cloudflared reinstall for healthy tunnel."
+                    $reinstall = "N"
+                } else {
+                    Start-Sleep -Seconds 1
+                }
+            }
+        }
+        
         if ($reinstall -notin @('Y', 'y')) {
             Log "Tunnel is healthy. Skipping Cloudflared reinstall."
             $skipCloudflaredSetup = $true
@@ -433,7 +506,31 @@ if (-not (Test-Path $listenerPath)) {
 
 
 if ($listenerService -and $listenerService.Status -eq 'Running') {
-    $reinstallListener = Read-Host "Listener service is already running. Reinstall listener? (Y/N)"
+    $reinstallListener = $null
+    $maxRetries = 3
+    $retryCount = 0
+    
+    while ($reinstallListener -eq $null -and $retryCount -lt $maxRetries) {
+        try {
+            $reinstallListener = Read-Host "Listener service is already running. Reinstall listener? (Y/N)"
+            if ($reinstallListener -match '^[YyNn]$') {
+                break
+            } else {
+                Write-Host "Please enter Y or N"
+                $reinstallListener = $null
+                $retryCount++
+            }
+        } catch {
+            $retryCount++
+            if ($retryCount -ge $maxRetries) {
+                Log "Unable to get user input after $maxRetries attempts. Defaulting to skip listener reinstall."
+                $reinstallListener = "N"
+            } else {
+                Start-Sleep -Seconds 1
+            }
+        }
+    }
+    
     if ($reinstallListener -in @('Y', 'y')) {
         Stop-Service -Name CloudflareTunnelListener -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
