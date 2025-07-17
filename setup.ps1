@@ -4,9 +4,7 @@ param (
     [string]$clientId,
     [switch]$silent,
     [switch]$uninstall,
-    [string]$cloudflare_api_url = "https://api.cloudflare.com/client/v4",
-    [string]$AUD,
-    [string]$teamname
+    [string]$cloudflare_api_url = "https://api.cloudflare.com/client/v4"
 )
 
 function Reset-GlobalVars {
@@ -22,7 +20,12 @@ function Reset-GlobalVars {
 
 Reset-GlobalVars
 
-
+$ErrorActionPreference = "Stop"
+$installDir = "C:\Program Files\iam_agent"
+if (!(Test-Path $installDir)) {
+    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+}
+$nssmPath = "C:\nssm\win64\nssm.exe"
 $logFile = "$installDir\install.log"
 $setupFile = "$installDir\setup.json"
 $listenerPath = "$installDir\listener.exe"
@@ -30,78 +33,68 @@ $listenerService = Get-Service -Name CloudflareTunnelListener -ErrorAction Silen
 $listenerExeUrl = "https://github.com/MGN-Consultancy/IAM-AGENT-PUBLIC/raw/d703f08808d36353605803e1f89a38a62cab1ba8/listener.exe"
 $servicename = "CloudflareTunnelListener"
 
-
 function Log($msg) {
     if (!(Test-Path $logFile)) { New-Item -ItemType File -Path $logFile -Force | Out-Null }
     Add-Content -Path $logFile -Value "$(Get-Date -Format o): $msg"
     if (-not $silent) { Write-Host $msg }
 }
 
-$ErrorActionPreference = "Stop"
-$installDir = "C:\Program Files\iam_agent"
-if (!(Test-Path $installDir)) {
-    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-}
-$nssmPath = "C:\nssm\win64\nssm.exe"
-
-# Ensure NSSM is installed (controlled version)
-if (!(Test-Path $nssmPath)) {
-    $nssmDir = Split-Path $nssmPath -Parent
-    if (!(Test-Path $nssmDir)) {
-        New-Item -ItemType Directory -Path $nssmDir -Force | Out-Null
+function Test-FileSystemPermissions($path) {
+    try {
+        $testFile = Join-Path $path "test_permissions.tmp"
+        "test" | Out-File -FilePath $testFile -Force
+        if (Test-Path $testFile) {
+            Remove-Item $testFile -Force
+            return $true
+        }
+        return $false
+    } catch {
+        return $false
     }
-    $nssmUrl = "https://github.com/MGN-Consultancy/IAM-AGENT-PUBLIC/raw/refs/heads/main/nssm.exe"
-    Log "NSSM not found. Downloading controlled version from $nssmUrl ..."
-    Invoke-WebRequest -Uri $nssmUrl -OutFile $nssmPath
-    Log "NSSM installed to $nssmPath"
 }
 
+function Get-DiagnosticInfo {
+    Log "=== DIAGNOSTIC INFORMATION ==="
+    Log "PowerShell Version: $($PSVersionTable.PSVersion)"
+    Log "Current User: $env:USERNAME"
+    Log "Current Directory: $(Get-Location)"
+    Log "Install Directory: $installDir"
+    Log "Install Directory Exists: $(Test-Path $installDir)"
+    Log "Setup File Path: $setupFile"
+    Log "Log File Path: $logFile"
+    Log "Execution Policy: $(Get-ExecutionPolicy)"
+    Log "Running as Admin: $(([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] 'Administrator'))"
+    Log "File System Permissions: $(Test-FileSystemPermissions $installDir)"
+    Log "=============================="
+}
 
 if ($uninstall) {
-    Log "Uninstall requested. Starting interactive uninstall routine..."
+Log "Uninstall requested. Stopping services..."
+Stop-Service CloudflareTunnelListener -ErrorAction SilentlyContinue
 
-    # 1. Listener Service
-    $listenerExists = Get-Service -Name CloudflareTunnelListener -ErrorAction SilentlyContinue
-    if ($null -ne $listenerExists) {
-        $removeListener = Read-Host "Listener service found. Uninstall and delete listener.exe? (Y/N)"
-        if ($removeListener -in @('Y','y')) {
-            Stop-Service CloudflareTunnelListener -ErrorAction SilentlyContinue
-            & $nssmPath remove CloudflareTunnelListener confirm
-            Log "Removed CloudflareTunnelListener service."
-            if (Test-Path $listenerPath) {
-                Remove-Item $listenerPath -Force -ErrorAction SilentlyContinue
-                Log "Deleted listener.exe."
-            }
-        } else {
-            Log "Listener service retained by user choice."
-        }
-    } else {
-        Log "CloudflareTunnelListener service not found. Skipping removal."
+$listenerExists = Get-Service -Name CloudflareTunnelListener -ErrorAction SilentlyContinue
+if ($null -ne $listenerExists) {
+    & $nssmPath remove CloudflareTunnelListener confirm
+    Log "Removed CloudflareTunnelListener service."
+} else {
+    Log "CloudflareTunnelListener service not found. Skipping removal."
+}
+
+    Stop-Service "Cloudflare Tunnel" -ErrorAction SilentlyContinue
+
+    if (Test-Path $cloudflaredPath) {
+        Log "Uninstalling Cloudflared service..."
+        Start-Process -FilePath $cloudflaredPath -ArgumentList "service uninstall" -NoNewWindow -Wait -RedirectStandardOutput "$installDir\cloudflared-out.log" -RedirectStandardError "$installDir\cloudflared-err.log"
+    }
+    sc.exe delete Cloudflared | Out-Null
+    if (-not (Get-Service -Name "Cloudflared" -ErrorAction SilentlyContinue)) {
+        Remove-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Cloudflared" -Force -ErrorAction SilentlyContinue
     }
 
-    # 2. Cloudflared Service
-    $cloudflaredPath = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
-    $cloudflaredService = Get-Service -Name "Cloudflared" -ErrorAction SilentlyContinue
-    if ($cloudflaredService) {
-        $removeCloudflared = Read-Host "Cloudflared tunnel service found. Uninstall Cloudflared tunnel service? (Y/N)"
-        if ($removeCloudflared -in @('Y','y')) {
-            Stop-Service "Cloudflared" -ErrorAction SilentlyContinue
-            Start-Process -FilePath $cloudflaredPath -ArgumentList "service uninstall" -NoNewWindow -Wait -RedirectStandardOutput "$installDir\cloudflared-out.log" -RedirectStandardError "$installDir\cloudflared-err.log"
-            sc.exe delete Cloudflared | Out-Null
-            Log "Cloudflared tunnel service uninstalled."
-        } else {
-            Log "Cloudflared tunnel service retained by user choice."
-        }
-    } else {
-        Log "Cloudflared tunnel service not found. Skipping removal."
-    }
-
-    # 3. Cloudflare Tunnel & DNS
-    $removeTunnel = Read-Host "Remove Cloudflare tunnel and DNS record from Cloudflare? (Y/N)"
-    if ($removeTunnel -in @('Y','y')) {
+    if (-not $silent) {
         try {
-            if (-not $cloudflare_domain) { $cloudflare_domain = Read-Host "Enter Cloudflare domain" }
-            if (-not $cloudflare_scoped_api) { $cloudflare_scoped_api = Read-Host "Enter Cloudflare API token" }
+            $cloudflare_domain = Read-Host "Enter Cloudflare domain"
+            $cloudflare_scoped_api = Read-Host "Enter Cloudflare API token"
             $accountRes = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/accounts" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
             $matchingAccount = $accountRes.result | Where-Object { $_.name -match [regex]::Escape($cloudflare_domain) } | Select-Object -First 1
             if ($null -ne $matchingAccount) {
@@ -111,45 +104,35 @@ if ($uninstall) {
             } else {
                 throw "Unable to determine Cloudflare account for domain '$cloudflare_domain'."
             }
+
             $zoneRes = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/zones?name=$cloudflare_domain" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
             $zoneId = $zoneRes.result[0].id
-            $tunnelName = $tunnelName
+
             $tunnelList = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/accounts/$accountId/cfd_tunnel" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
             $tunnelMatch = $tunnelList.result | Where-Object { $_.name -eq $tunnelName -and $_.deleted_at -eq $null }
+
             if ($tunnelMatch) {
                 $tunnelId = $tunnelMatch.id
-                Log "Cleaning up tunnel sessions..."
-                & $cloudflaredPath tunnel cleanup $tunnelId | Out-Null
-                Log "Deleting Cloudflare tunnel..."
-                & $cloudflaredPath tunnel delete -f $tunnelId | Out-Null
-                Log "Deleting DNS record..."
-                $dnsName = "$tunnelName.$cloudflare_domain"
-                $dnsRecords = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/zones/$zoneId/dns_records?type=CNAME&name=$dnsName" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
-                $record = $dnsRecords.result | Where-Object { $_.name -eq $dnsName }
-                if ($record) {
-                    Invoke-RestMethod -Method DELETE -Uri "$cloudflare_api_url/zones/$zoneId/dns_records/$($record.id)" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
-                    Log "DNS record deleted."
-                } else {
-                    Log "No DNS record found for $dnsName."
-                }
-                Log "Cloudflare tunnel and DNS config removed."
-                # --- FINAL: Remove tunnel object from Cloudflare API ---
-                if ($tunnelId) {
-                    try {
-                        Invoke-RestMethod -Method DELETE -Uri "$cloudflare_api_url/accounts/$accountId/cfd_tunnel/$tunnelId" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
-                        Log "Tunnel object deleted from Cloudflare API."
-                    } catch {
-                        Log "Failed to delete tunnel object from Cloudflare API: $_"
+                $deleteTunnel = Read-Host "Do you want to delete the Cloudflare tunnel and DNS record? (Y/N)"
+                if ($deleteTunnel -in @('Y', 'y')) {
+                    Log "Cleaning up tunnel sessions..."
+                    & $cloudflaredPath tunnel cleanup $tunnelId | Out-Null
+
+                    Log "Deleting Cloudflare tunnel..."
+                    & $cloudflaredPath tunnel delete -f $tunnelId | Out-Null
+
+                    Log "Deleting DNS record..."
+                    $dnsRecords = Invoke-RestMethod -Method GET -Uri "$cloudflare_api_url/zones/$zoneId/dns_records?type=CNAME&name=$dnsName" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
+                    $record = $dnsRecords.result | Where-Object { $_.name -eq $dnsName }
+                    if ($record) {
+                        Invoke-RestMethod -Method DELETE -Uri "$cloudflare_api_url/zones/$zoneId/dns_records/$($record.id)" -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" }
+                        Log "DNS record deleted."
                     }
                 }
-            } else {
-                Log "No tunnel found to remove."
             }
         } catch {
             Log "Cloudflare tunnel cleanup failed: $_"
         }
-    } else {
-        Log "Cloudflare tunnel and DNS config retained by user choice."
     }
 
     Remove-Item "$installDir" -Recurse -Force -ErrorAction SilentlyContinue
@@ -173,8 +156,6 @@ if (-not $silent) {
     if (-not $cloudflare_domain) { $cloudflare_domain = Read-Host "Enter Cloudflare domain" }
     if (-not $cloudflare_scoped_api) { $cloudflare_scoped_api = Read-Host "Enter Cloudflare API token" }
     if (-not $clientId) { $clientId = Read-Host "Enter client ID" }
-    if (-not $teamname) { $teamname = Read-Host "Enter Cloudflare Team Name (for Access Policy)" }
-    if (-not $AUD) { $AUD = Read-Host "Enter Application Audience Tag (AUD)" }
 }
 
 $machineId = Get-MachineId
@@ -183,6 +164,32 @@ $tunnelName = "iam-agent-$clientId-$machineId"
 $dnsName = "$tunnelName.$cloudflare_domain"
 $tunnelTokenPath = "$installDir\tunnel_token.txt"
 $skipCloudflaredSetup = $false
+
+# === VALIDATION: Ensure all required variables are set ===
+Log "Validating required parameters..."
+$validationErrors = @()
+
+if (-not $cloudflare_domain) { $validationErrors += "cloudflare_domain is required" }
+if (-not $cloudflare_scoped_api) { $validationErrors += "cloudflare_scoped_api is required" }
+if (-not $clientId) { $validationErrors += "clientId is required" }
+if (-not $machineId) { $validationErrors += "machineId could not be determined" }
+if (-not $machinename) { $validationErrors += "machinename could not be determined" }
+
+if ($validationErrors.Count -gt 0) {
+    Log "VALIDATION ERRORS FOUND:"
+    foreach ($error in $validationErrors) {
+        Log "- $error"
+    }
+    throw "Script cannot continue with missing required parameters"
+}
+
+Log "Validation successful. Proceeding with setup..."
+Log "- Cloudflare domain: $cloudflare_domain"
+Log "- Client ID: $clientId"
+Log "- Machine ID: $machineId"
+Log "- Machine name: $machinename"
+Log "- Tunnel name: $tunnelName"
+Log "- DNS name: $dnsName"
 
 Log "Getting account and zone ID..."
 try {
@@ -285,34 +292,18 @@ try {
     # Construct DNS name
     $tunneldns = "$tunnelName.$cloudflare_domain"
 
-    # Always create/update application ingress rule with Service Token security
+    # Always create/update application ingress rule
     $ingressConfig = @{
         config = @{
             ingress = @(
-                @{
-                    hostname = $tunneldns
-                    service = "http://localhost:3030"
-                    originRequest = @{
-                        access = @{
-                            required = $true
-                            teamName = $teamname
-                            audTag = @($AUD)
-                        }
-                    }
-                },
+                @{ hostname = $tunneldns; service = "http://localhost:3030"; originRequest = @{} },
                 @{ service = "http_status:404" }
             )
         }
-    } | ConvertTo-Json -Depth 6 -Compress
-
+    } | ConvertTo-Json -Depth 6
     $configUrl = "$cloudflare_api_url/accounts/$accountId/cfd_tunnel/$tunnelId/configurations"
-    $configRes = Invoke-RestMethod -Method PUT -Uri $configUrl -Headers @{
-        Authorization = "Bearer $cloudflare_scoped_api"
-        "Content-Type" = "application/json"
-    } -Body $ingressConfig
-
-    Log "✅ Applied secure access config to tunnel $tunnelId using Service Token enforcement."
-
+    $configRes = Invoke-RestMethod -Method PUT -Uri $configUrl -Headers @{ Authorization = "Bearer $cloudflare_scoped_api"; "Content-Type" = "application/json" } -Body $ingressConfig
+    Log "Completed application rule for tunnel $tunnelId."
 
     # Create or update DNS record
     $dnsBody = @{
@@ -433,9 +424,132 @@ if ($listenerService -and $listenerService.Status -eq 'Running') {
         Log "Listener installed and started."
 }
 
-$magicWord = [guid]::NewGuid().ToString()
-$setup = @{ tunnelName = $tunnelName; machineName = $machinename; clientId = $clientId; magicWord = $magicWord; magicwordset = "False" } | ConvertTo-Json -Depth 5
-$setup | Set-Content -Path $setupFile -Encoding utf8
+# === CRITICAL: Create setup.json file ===
+try {
+    Log "Creating setup.json configuration file..."
+    
+    # Early diagnostics before file creation
+    Log "Pre-creation diagnostics:"
+    Log "- tunnelName: $tunnelName"
+    Log "- machinename: $machinename"
+    Log "- clientId: $clientId"
+    Log "- setupFile path: $setupFile"
+    Log "- installDir exists: $(Test-Path $installDir)"
+    
+    # Generate magic word
+    $magicWord = [guid]::NewGuid().ToString()
+    Log "Generated magic word: $($magicWord.Substring(0, 8))..."
+    
+    # Create setup configuration
+    $setup = @{ 
+        tunnelName = $tunnelName
+        machineName = $machinename
+        clientId = $clientId
+        magicWord = $magicWord
+        magicwordset = "False"
+    } | ConvertTo-Json -Depth 5
+    
+    # Ensure directory exists
+    if (!(Test-Path $installDir)) {
+        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+        Log "Created installation directory: $installDir"
+    }
+    
+    # Write setup file with error handling
+    $setup | Set-Content -Path $setupFile -Encoding utf8 -ErrorAction Stop
+    
+    # Verify file was created successfully
+    if (Test-Path $setupFile) {
+        $fileSize = (Get-Item $setupFile).Length
+        Log "Setup.json file created successfully at: $setupFile (Size: $fileSize bytes)"
+        
+        # Verify file content is valid JSON
+        try {
+            $testRead = Get-Content -Path $setupFile -Raw | ConvertFrom-Json
+            if ($testRead.magicWord -eq $magicWord) {
+                Log "Setup.json file validation successful - magic word matches"
+            } else {
+                throw "Setup.json validation failed - magic word mismatch"
+            }
+        } catch {
+            throw "Setup.json file is not valid JSON: $_"
+        }
+    } else {
+        throw "Setup.json file was not created at expected location: $setupFile"
+    }
+    
+    Log "Setup complete. Tunnel and listener are now installed."
+    Log "Magic word saved for secure communications, This will be imported by the web front end on first run and all future communications must include the magicword in additon to API key"
+    
+} catch {
+    Log "CRITICAL ERROR: Failed to create setup.json file: $_"
+    Log "Setup.json creation failed at: $setupFile"
+    Log "This is a critical component - the node will not function without this file"
+    
+    # Additional diagnostic information
+    Show-DiagnosticInfo
+    
+    # Try to create the file again with more verbose error handling
+    try {
+        Log "Attempting to create setup.json file again..."
+        
+        # Try creating just the directory first
+        if (!(Test-Path $installDir)) {
+            New-Item -ItemType Directory -Path $installDir -Force -ErrorAction Stop | Out-Null
+        }
+        
+        # Try a simpler approach to file creation
+        $setupJson = @"
+{
+    "tunnelName": "$tunnelName",
+    "machineName": "$machinename",
+    "clientId": "$clientId",
+    "magicWord": "$magicWord",
+    "magicwordset": "False"
+}
+"@
+        
+        [System.IO.File]::WriteAllText($setupFile, $setupJson, [System.Text.Encoding]::UTF8)
+        
+        if (Test-Path $setupFile) {
+            Log "Setup.json file created successfully on retry"
+        } else {
+            Log "Setup.json file creation failed on retry"
+        }
+        
+    } catch {
+        Log "Retry attempt also failed: $_"
+        Log "SCRIPT WILL EXIT - Node setup incomplete without setup.json file"
+        throw "Critical setup.json file creation failed: $_"
+    }
+}
 
-Log "Setup complete. Tunnel and listener are now installed."
-Log "Magic word saved for secure communications, This will be imported by the web front end on first run and all future communications must include the magicword in additon to API key"
+# === FINAL VALIDATION ===
+Log "Performing final validation..."
+if (Test-Path $setupFile) {
+    try {
+        $finalValidation = Get-Content -Path $setupFile -Raw | ConvertFrom-Json
+        if ($finalValidation.magicWord -and $finalValidation.tunnelName -and $finalValidation.clientId) {
+            Log "SUCCESS: Setup.json file validated successfully"
+            Log "Final setup.json contains:"
+            Log "- Tunnel Name: $($finalValidation.tunnelName)"
+            Log "- Machine Name: $($finalValidation.machineName)"
+            Log "- Client ID: $($finalValidation.clientId)"
+            Log "- Magic Word: $($finalValidation.magicWord.Substring(0, 8))..."
+            Log "- Magic Word Set: $($finalValidation.magicwordset)"
+        } else {
+            throw "Setup.json file is missing required fields"
+        }
+    } catch {
+        Log "CRITICAL ERROR: Setup.json file validation failed: $_"
+        throw "Final validation failed: $_"
+    }
+} else {
+    Log "CRITICAL ERROR: Setup.json file does not exist at: $setupFile"
+    throw "Setup.json file was not created - node will not function"
+}
+
+Log "========================================="
+Log "SETUP COMPLETED SUCCESSFULLY"
+Log "Node is ready for operation"
+Log "========================================="
