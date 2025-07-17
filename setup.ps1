@@ -22,6 +22,21 @@ function Reset-GlobalVars {
 
 Reset-GlobalVars
 
+
+$logFile = "$installDir\install.log"
+$setupFile = "$installDir\setup.json"
+$listenerPath = "$installDir\listener.exe"
+$listenerService = Get-Service -Name CloudflareTunnelListener -ErrorAction SilentlyContinue
+$listenerExeUrl = "https://github.com/MGN-Consultancy/IAM-AGENT-PUBLIC/raw/d703f08808d36353605803e1f89a38a62cab1ba8/listener.exe"
+$servicename = "CloudflareTunnelListener"
+
+
+function Log($msg) {
+    if (!(Test-Path $logFile)) { New-Item -ItemType File -Path $logFile -Force | Out-Null }
+    Add-Content -Path $logFile -Value "$(Get-Date -Format o): $msg"
+    if (-not $silent) { Write-Host $msg }
+}
+
 $ErrorActionPreference = "Stop"
 $installDir = "C:\Program Files\iam_agent"
 if (!(Test-Path $installDir)) {
@@ -41,18 +56,6 @@ if (!(Test-Path $nssmPath)) {
     Log "NSSM installed to $nssmPath"
 }
 
-$logFile = "$installDir\install.log"
-$setupFile = "$installDir\setup.json"
-$listenerPath = "$installDir\listener.exe"
-$listenerService = Get-Service -Name CloudflareTunnelListener -ErrorAction SilentlyContinue
-$listenerExeUrl = "https://github.com/MGN-Consultancy/IAM-AGENT-PUBLIC/raw/d703f08808d36353605803e1f89a38a62cab1ba8/listener.exe"
-$servicename = "CloudflareTunnelListener"
-
-function Log($msg) {
-    if (!(Test-Path $logFile)) { New-Item -ItemType File -Path $logFile -Force | Out-Null }
-    Add-Content -Path $logFile -Value "$(Get-Date -Format o): $msg"
-    if (-not $silent) { Write-Host $msg }
-}
 
 if ($uninstall) {
     Log "Uninstall requested. Starting interactive uninstall routine..."
