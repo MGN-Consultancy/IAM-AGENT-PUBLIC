@@ -68,8 +68,69 @@ function Get-DiagnosticInfo {
     Log "=============================="
 }
 
+function Ensure-NSSM {
+    if (Test-Path $nssmPath) {
+        Log "NSSM already available at: $nssmPath"
+        return $true
+    }
+    
+    Log "NSSM not found at $nssmPath. Downloading and installing..."
+    
+    try {
+        # Create NSSM directory
+        $nssmDir = "C:\nssm"
+        if (!(Test-Path $nssmDir)) {
+            New-Item -ItemType Directory -Path $nssmDir -Force | Out-Null
+        }
+        
+        # Download NSSM
+        $nssmZipUrl = "https://nssm.cc/release/nssm-2.24.zip"
+        $nssmZipPath = "$env:TEMP\nssm.zip"
+        
+        Log "Downloading NSSM from: $nssmZipUrl"
+        Invoke-WebRequest -Uri $nssmZipUrl -OutFile $nssmZipPath -ErrorAction Stop
+        
+        # Extract NSSM
+        Log "Extracting NSSM to: $nssmDir"
+        Expand-Archive -Path $nssmZipPath -DestinationPath $nssmDir -Force
+        
+        # Move files to correct location
+        $extractedPath = "$nssmDir\nssm-2.24"
+        if (Test-Path $extractedPath) {
+            Move-Item "$extractedPath\*" $nssmDir -Force
+            Remove-Item $extractedPath -Recurse -Force
+        }
+        
+        # Verify installation
+        if (Test-Path $nssmPath) {
+            Log "NSSM successfully installed at: $nssmPath"
+            return $true
+        } else {
+            throw "NSSM installation failed - executable not found at expected location"
+        }
+        
+    } catch {
+        Log "ERROR: Failed to install NSSM: $_"
+        throw "NSSM installation failed: $_"
+    } finally {
+        # Clean up download
+        if (Test-Path $nssmZipPath) {
+            Remove-Item $nssmZipPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 if ($uninstall) {
 Log "Uninstall requested. Stopping services..."
+
+# Ensure NSSM is available for service removal
+try {
+    Ensure-NSSM
+} catch {
+    Log "WARNING: NSSM not available for service removal: $_"
+    Log "Some services may need to be removed manually"
+}
+
 Stop-Service CloudflareTunnelListener -ErrorAction SilentlyContinue
 
 $listenerExists = Get-Service -Name CloudflareTunnelListener -ErrorAction SilentlyContinue
@@ -354,6 +415,14 @@ if (-not $skipCloudflaredSetup) {
 
 # Installing the Listner Service
 
+# Ensure NSSM is available for service installation
+try {
+    Ensure-NSSM
+} catch {
+    Log "ERROR: NSSM installation failed: $_"
+    throw "Cannot install listener service without NSSM: $_"
+}
+
 # Download listener if missing
 log "Checking for existing installations of the listener"
 
@@ -487,7 +556,7 @@ try {
     Log "This is a critical component - the node will not function without this file"
     
     # Additional diagnostic information
-    Show-DiagnosticInfo
+    Get-DiagnosticInfo
     
     # Try to create the file again with more verbose error handling
     try {
